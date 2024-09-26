@@ -2,52 +2,54 @@ package main
 
 import (
 	"fmt"
+	"strings"
+
 	config "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/service/route/v3"
 	"github.com/golang/protobuf/ptypes"
 
-	"github.com/golang/protobuf/ptypes/any"
 	"strconv"
 	"time"
+
+	"github.com/golang/protobuf/ptypes/any"
 )
 
 var (
 	version = 1
 )
 
-type vhds struct {}
+type vhds struct{}
 
 func NewVHDSServer() *vhds {
 	return &vhds{}
 }
 
-func buildResponse(targetPrefix string) *discovery.DeltaDiscoveryResponse {
+func buildResponse(domain, name string) *discovery.DeltaDiscoveryResponse {
 	resources := []*discovery.Resource{
 		{
-			Name:     ResourceName,
+			Name:     name,
 			Version:  strconv.Itoa(version),
-			Resource: buildNewVHDSResources(targetPrefix),
+			Resource: buildNewVHDSResources(domain, name),
 		},
 	}
 	version++
 	return &discovery.DeltaDiscoveryResponse{
-		TypeUrl:           VHDSTypeUrl,
-		Resources:         resources,
-		RemovedResources:  []string{},
+		TypeUrl:          VHDSTypeUrl,
+		Resources:        resources,
+		RemovedResources: []string{},
 	}
 }
 
-func buildNewVHDSResources(targetPrefix string) *any.Any {
+func buildNewVHDSResources(domain, name string) *any.Any {
 	var clusterName = ClusterName
-	var virtualHostName = "service"
 	vhost := &config.VirtualHost{
-		Name:    virtualHostName,
-		Domains: []string{"*"},
+		Name:    name,
+		Domains: []string{domain},
 		Routes: []*config.Route{{
 			Match: &config.RouteMatch{
 				PathSpecifier: &config.RouteMatch_Prefix{
-					Prefix: targetPrefix,
+					Prefix: "/",
 				},
 			},
 
@@ -81,15 +83,24 @@ func (v *vhds) DeltaVirtualHosts(dvhs route.VirtualHostDiscoveryService_DeltaVir
 			fmt.Println("ResourceNamesSubscribe: ", req.GetResourceNamesSubscribe())
 			// GetResourceNamesUnsubscribe 暂时还没有搞清楚，应该是要删除的？
 			fmt.Println("ResourceNamesUnsubscribe: ", req.GetResourceNamesUnsubscribe())
+
+			names := req.GetResourceNamesSubscribe()
+			for _, name := range names {
+				segs := strings.SplitN(name, "/", 2)
+				domain := segs[1]
+				if err := dvhs.Send(buildResponse(domain, name)); err != nil {
+					fmt.Printf("send response error: %v\n", err)
+				}
+			}
 		}
 	}()
 
 	for range time.Tick(10 * time.Second) {
 		// 通过 vhds 下发来变更 targetPrefix 的 VirtualHost
 		// 现在可以通过 127.0.0.1:80/route(version%3 + 1) 来访问了
-		prefix := "/route" + strconv.Itoa(version%3 + 1)
+		prefix := "/route" + strconv.Itoa(version%3+1)
 		fmt.Println("通过 vhds 来变更 VirtualHost，现在可以访问 127.0.0.1" + prefix)
-		if err := dvhs.Send(buildResponse(prefix)); err != nil {
+		if err := dvhs.Send(buildResponse("foo.com", "foo.com")); err != nil {
 			return err
 		}
 	}
